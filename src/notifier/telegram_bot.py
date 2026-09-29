@@ -107,7 +107,19 @@ class TelegramNotifier(BaseNotifier):
             elif stage_tag == "BUY_READY":
                 stage_badge = " [🎯買點警戒]"
 
-            message += f"{emoji} *[{stock_id} {name}]({yahoo_tech_url})*{stage_badge} ⭐ {score:.0f}分\n"
+            # 處置與注意標籤
+            disp_info = res.get("disposition_info")
+            attn_info = res.get("attention_info")
+            disp_badge = ""
+            if disp_info:
+                interval = disp_info.get("matching_interval", "處置")
+                rem = disp_info.get("remaining_trading_days", 0)
+                soon = "🚀即將出關" if disp_info.get("is_exiting_soon") else f"剩{rem}天"
+                disp_badge = f" [🚨{interval}/{soon}]"
+            elif attn_info:
+                disp_badge = " [⚠️注意股]"
+
+            message += f"{emoji} *[{stock_id} {name}]({yahoo_tech_url})*{stage_badge}{disp_badge} ⭐ {score:.0f}分\n"
             message += f"   💰 收盤: {close:,.0f} | 🎯 突破: {pivot:,.0f} | 距突破: {distance}%\n"
             message += f"   🏢 市值: {mcap_str} | 💵 均金額: {turnover_str}\n"
             message += f"   ⚡ 1年Beta: {beta_str} | 📉 收斂: {contraction_str}\n"

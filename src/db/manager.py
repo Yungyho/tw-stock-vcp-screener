@@ -6,7 +6,7 @@
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -103,16 +103,48 @@ class DBManager:
         );
         """
 
+        create_disposition_stocks_sql = """
+        CREATE TABLE IF NOT EXISTS disposition_stocks (
+            stock_id TEXT NOT NULL,
+            stock_name TEXT NOT NULL,
+            market TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            disposition_type TEXT NOT NULL,
+            matching_interval TEXT NOT NULL,
+            reasons TEXT,
+            condition_details TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (stock_id, start_date)
+        );
+        """
+
+        create_attention_stocks_sql = """
+        CREATE TABLE IF NOT EXISTS attention_stocks (
+            stock_id TEXT NOT NULL,
+            stock_name TEXT NOT NULL,
+            market TEXT NOT NULL,
+            notice_date TEXT NOT NULL,
+            reasons TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (stock_id, notice_date)
+        );
+        """
+
         create_indices_sql = [
             "CREATE INDEX IF NOT EXISTS idx_price_history_stock_date ON price_history(stock_id, date DESC);",
             "CREATE INDEX IF NOT EXISTS idx_scan_results_date ON scan_results(scan_date);",
             "CREATE INDEX IF NOT EXISTS idx_scan_results_stock_id ON scan_results(stock_id);",
+            "CREATE INDEX IF NOT EXISTS idx_disposition_period ON disposition_stocks(start_date, end_date);",
+            "CREATE INDEX IF NOT EXISTS idx_attention_date ON attention_stocks(notice_date DESC);",
         ]
 
         with self.conn:
             self.conn.execute(create_stock_list_sql)
             self.conn.execute(create_price_history_sql)
             self.conn.execute(create_scan_results_sql)
+            self.conn.execute(create_disposition_stocks_sql)
+            self.conn.execute(create_attention_stocks_sql)
             for idx_sql in create_indices_sql:
                 self.conn.execute(idx_sql)
 
@@ -456,6 +488,168 @@ class DBManager:
                 self.conn.execute("DELETE FROM scan_results;")
                 logger.info("已清空 scan_results 資料表")
             self.conn.execute("VACUUM;")
+
+    def upsert_disposition_stocks(self, records: list[dict[str, Any]]) -> int:
+        """批次新增或更新處置股票清單 (Batch insert or replace disposition stock records).
+
+        Args:
+            records: 包含 stock_id, stock_name, market, start_date, end_date,
+                     disposition_type, matching_interval, reasons, condition_details 的字典清單
+
+        Returns:
+            int: 成功寫入或更新的筆數
+        """
+        if not self.conn:
+            raise RuntimeError("資料庫連線已關閉")
+        if not records:
+            return 0
+
+        sql = """
+        INSERT OR REPLACE INTO disposition_stocks (
+            stock_id, stock_name, market, start_date, end_date,
+            disposition_type, matching_interval, reasons, condition_details, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+        """
+        rows = [
+            (
+                str(r["stock_id"]).strip(),
+                str(r.get("stock_name", "")).strip(),
+                str(r.get("market", "")).strip(),
+                str(r.get("start_date", "")).strip(),
+                str(r.get("end_date", "")).strip(),
+                str(r.get("disposition_type", "")).strip(),
+                str(r.get("matching_interval", "5分撮合")).strip(),
+                str(r.get("reasons", "")).strip(),
+                str(r.get("condition_details", "")).strip(),
+            )
+            for r in records
+            if r.get("stock_id") and r.get("start_date")
+        ]
+
+        with self.conn:
+            self.conn.executemany(sql, rows)
+            logger.debug("已更新 disposition_stocks 資料共 %d 筆", len(rows))
+            return len(rows)
+
+    def get_active_dispositions(
+        self, query_date: Optional[str] = None
+    ) -> dict[str, dict[str, Any]]:
+        """取得特定日期（預設今日）處於處置期間中的股票字典.
+
+        Args:
+            query_date: 查詢日期字串 (YYYY-MM-DD)，若未指定則使用今日
+
+        Returns:
+            dict[str, dict[str, Any]]: key 為 stock_id，value 包含詳細處置資訊與剩餘營業日數
+        """
+        if not self.conn:
+            raise RuntimeError("資料庫連線已關閉")
+
+        target_date = query_date or datetime.now().strftime("%Y-%m-%d")
+        sql = """
+        SELECT stock_id, stock_name, market, start_date, end_date,
+               disposition_type, matching_interval, reasons, condition_details
+        FROM disposition_stocks
+        WHERE start_date <= ? AND end_date >= ?;
+        """
+        cursor = self.conn.execute(sql, (target_date, target_date))
+        rows = cursor.fetchall()
+        result = {}
+
+        for row in rows:
+            sid = str(row["stock_id"])
+            end_date = str(row["end_date"])
+            rem_days = 0
+            try:
+                cur = datetime.strptime(target_date, "%Y-%m-%d").date()
+                end_d = datetime.strptime(end_date, "%Y-%m-%d").date()
+                if cur <= end_d:
+                    d = cur
+                    while d <= end_d:
+                        if d.weekday() < 5:
+                            rem_days += 1
+                        d += timedelta(days=1)
+            except Exception:
+                rem_days = 0
+
+            result[sid] = {
+                "stock_id": sid,
+                "stock_name": row["stock_name"],
+                "market": row["market"],
+                "start_date": row["start_date"],
+                "end_date": end_date,
+                "disposition_type": row["disposition_type"],
+                "matching_interval": row["matching_interval"],
+                "reasons": row["reasons"],
+                "condition_details": row["condition_details"],
+                "remaining_trading_days": rem_days,
+                "is_exiting_soon": bool(0 < rem_days <= 2),
+            }
+        return result
+
+    def upsert_attention_stocks(self, records: list[dict[str, Any]]) -> int:
+        """批次新增或更新注意股票清單 (Batch insert or replace attention stock records)."""
+        if not self.conn:
+            raise RuntimeError("資料庫連線已關閉")
+        if not records:
+            return 0
+
+        sql = """
+        INSERT OR REPLACE INTO attention_stocks (
+            stock_id, stock_name, market, notice_date, reasons, updated_at
+        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+        """
+        rows = [
+            (
+                str(r["stock_id"]).strip(),
+                str(r.get("stock_name", "")).strip(),
+                str(r.get("market", "")).strip(),
+                str(r.get("notice_date", "")).strip(),
+                str(r.get("reasons", "")).strip(),
+            )
+            for r in records
+            if r.get("stock_id") and r.get("notice_date")
+        ]
+
+        with self.conn:
+            self.conn.executemany(sql, rows)
+            logger.debug("已更新 attention_stocks 資料共 %d 筆", len(rows))
+            return len(rows)
+
+    def get_recent_attentions(
+        self, days: int = 3, query_date: Optional[str] = None
+    ) -> dict[str, dict[str, Any]]:
+        """取得最近 N 日被列為注意股票的清單字典."""
+        if not self.conn:
+            raise RuntimeError("資料庫連線已關閉")
+
+        target_date_obj = (
+            datetime.strptime(query_date, "%Y-%m-%d").date()
+            if query_date
+            else date.today()
+        )
+        cutoff_date = (target_date_obj - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        sql = """
+        SELECT stock_id, stock_name, market, notice_date, reasons
+        FROM attention_stocks
+        WHERE notice_date >= ?
+        ORDER BY notice_date DESC;
+        """
+        cursor = self.conn.execute(sql, (cutoff_date,))
+        rows = cursor.fetchall()
+        result = {}
+        for row in rows:
+            sid = str(row["stock_id"])
+            if sid not in result:
+                result[sid] = {
+                    "stock_id": sid,
+                    "stock_name": row["stock_name"],
+                    "market": row["market"],
+                    "notice_date": row["notice_date"],
+                    "reasons": row["reasons"],
+                }
+        return result
 
     def close(self) -> None:
         """關閉資料庫連線 (Close the database connection)."""

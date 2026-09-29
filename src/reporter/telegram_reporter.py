@@ -77,6 +77,22 @@ def format_stock_diagnostic(result: Dict[str, Any]) -> str:
     lines.append(f"📊 均量: {avg_vol_20:,.0f}張 | ⚡ Beta(vs {benchmark_name}): {beta_str}")
     lines.append("")
 
+    # ── 處置與注意警示 ──
+    disposition_info = result.get("disposition_info")
+    attention_info = result.get("attention_info")
+    if disposition_info:
+        interval = disposition_info.get("matching_interval", "分盤撮合")
+        rem = disposition_info.get("remaining_trading_days", 0)
+        end_d = disposition_info.get("end_date", "")
+        soon = " 🚀 *即將出關*" if disposition_info.get("is_exiting_soon") else ""
+        lines.append(f"🚨 *【處置股票】* `{interval}` | 剩餘 `{rem}` 日 (至 {end_d}){soon}")
+        lines.append(f"   ⚠️ 限制: 禁現股當沖 / 預收款券 (量縮受管制影響)")
+        lines.append("")
+    elif attention_info:
+        notice_d = attention_info.get("notice_date", "")
+        lines.append(f"⚠️ *【注意股票】* 公告日: `{notice_d}`")
+        lines.append("")
+
     # ── 階段判定 ──
     lines.append(f"{stage_icon} *階段:* {stage_res.stage_name}")
     if hasattr(stage_res, "stage_sub_status") and stage_res.stage_sub_status:

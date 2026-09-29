@@ -100,6 +100,8 @@ def main():
                     market_cap=result["market_cap"],
                     turnover_twd=result["turnover_twd"],
                     benchmark_name=result.get("benchmark_name"),
+                    disposition_info=result.get("disposition_info"),
+                    attention_info=result.get("attention_info"),
                 )
             else:
                 print(f"\n❌ 無法取得股票代號【{stock_code}】足夠的歷史數據（至少需 252 個交易日），請確認代號是否正確。")

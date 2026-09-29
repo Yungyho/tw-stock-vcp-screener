@@ -21,6 +21,7 @@ from src.data_fetcher import DataFetcher
 from src.db.manager import DBManager
 from src.market_cap import fetch_and_update_market_caps
 from src.notifier.telegram_bot import TelegramNotifier
+from src.disposition import DispositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,17 @@ class VCPScreener:
         if not benchmark_otc_df.empty:
             benchmark_otc_df = self._prepare_df_for_analysis(benchmark_otc_df)
 
+        # Step 3b: 同步並載入處置與注意股票清單 (Disposition & Attention Stocks)
+        logger.info("Step 3b: 檢查並同步台股處置與注意股票名單 (TWSE + TPEx)...")
+        disp_mgr = DispositionManager(self.db)
+        try:
+            disp_mgr.sync_to_database()
+        except Exception as e:
+            logger.warning("同步處置股票名單失敗，將使用資料庫既有快取: %s", e)
+        active_dispositions = disp_mgr.get_active_dispositions()
+        recent_attentions = disp_mgr.get_recent_attention_stocks(days=3)
+        logger.info("當前處於處置期之股票共 %d 檔，近期注意股 %d 檔", len(active_dispositions), len(recent_attentions))
+
         # Step 4: 逐檔篩選 (依市場別套用差異化門檻)
         logger.info(
             "Step 4: 開始逐檔篩選 (市場: %s, 上市門檻: 市值>%.1f億/均量>%d張, 上櫃門檻: 市值>%.1f億/均量>%d張)...",
@@ -142,6 +154,7 @@ class VCPScreener:
             "data_sufficient": 0,
             "passed_market_cap": 0,
             "passed_volume": 0,
+            "disposition_protected": 0,
             "passed_turnover": 0,
             "passed_beta": 0,
             "passed_prefilter": 0,
@@ -184,17 +197,41 @@ class VCPScreener:
             stats["data_sufficient"] += 1
 
             # 4c: 成交量、成交金額與最低股價過濾
+            disp_info = active_dispositions.get(stock_id)
+            attn_info = recent_attentions.get(stock_id)
+
             recent_20 = df.tail(20)
             avg_volume = float(recent_20["volume"].mean())  # 張數
             last_close = float(df.iloc[-1]["close"])
             turnover_twd = avg_volume * 1000.0 * last_close  # 每日成交金額 (元)
 
-            if avg_volume <= criteria["min_volume"]:
+            # 處置股動態均量保護：若處置前常態均量達標，則不因分盤撮合量縮而誤殺
+            eval_volume = avg_volume
+            eval_turnover_twd = turnover_twd
+            is_disp_protected = False
+
+            if disp_info:
+                disp_start = disp_info.get("start_date", "")
+                if disp_start:
+                    pre_df = df[df["date"] < disp_start]
+                    if len(pre_df) >= 20:
+                        pre_vol = float(pre_df.tail(20)["volume"].mean())
+                        if pre_vol > criteria["min_volume"]:
+                            eval_volume = pre_vol
+                            eval_turnover_twd = pre_vol * 1000.0 * last_close
+                            is_disp_protected = True
+                            stats["disposition_protected"] += 1
+                            logger.info(
+                                "🚨 處置股 [%s %s] 啟動常態均量保護: 處置期均量 %.0f 張, 入處置前 20 日均量 %.0f 張 (通過門檻)",
+                                stock_id, name, avg_volume, eval_volume,
+                            )
+
+            if eval_volume <= criteria["min_volume"]:
                 continue
             stats["passed_volume"] += 1
 
             # 成交金額門檻 (例如 > 100 K TWD = 10 萬元)
-            if self.settings.ENABLE_TURNOVER_FILTER and turnover_twd < criteria["min_turnover"]:
+            if self.settings.ENABLE_TURNOVER_FILTER and eval_turnover_twd < criteria["min_turnover"]:
                 continue
             stats["passed_turnover"] += 1
 
@@ -225,7 +262,7 @@ class VCPScreener:
                     continue
             stats["passed_tt"] += 1
 
-            # 4g: VCP 波動收斂型態偵測
+            # 4g: VCP 波動收斂型態偵測 (帶入處置資訊)
             vcp_result = detect_vcp(
                 analysis_df,
                 strict_mode=self.settings.VCP_STRICT_MODE,
@@ -236,17 +273,19 @@ class VCPScreener:
                 scan_mode=scan_mode,
                 include_breakout=getattr(self.settings, "INCLUDE_RECENT_BREAKOUT", True),
                 include_retest=getattr(self.settings, "INCLUDE_PIVOT_RETEST", True),
+                disposition_info=disp_info,
             )
             if not skip_vcp and not vcp_result["is_vcp"]:
                 continue
             stats["passed_vcp"] += 1
 
-            # 4h: 計算綜合評分
+            # 4h: 計算綜合評分 (處置股結合抗跌姿態評估)
             score = calculate_score(
                 trend_result=tt_result,
                 vcp_result=vcp_result,
                 df=analysis_df,
                 market_df=benchmark_df if not benchmark_df.empty else None,
+                disposition_info=disp_info,
             )
 
             # 計算量縮百分比
@@ -278,6 +317,9 @@ class VCPScreener:
                 "distance_to_pivot": round(vcp_result.get("distance_to_pivot", 0.0), 2),
                 "volume_change": round(volume_change, 1),
                 "scan_date": scan_date,
+                "disposition_info": disp_info,
+                "attention_info": attn_info,
+                "is_disposition_protected": is_disp_protected,
                 "details": {
                     "trend_template": tt_result.get("conditions", {}),
                     "vcp": {
@@ -287,6 +329,8 @@ class VCPScreener:
                         "action_stage": vcp_result.get("action_stage", "UNCONFIRMED"),
                         "action_stage_desc": vcp_result.get("action_stage_desc", ""),
                     },
+                    "disposition": disp_info,
+                    "attention": attn_info,
                 },
             }
             results.append(result_item)
@@ -307,7 +351,7 @@ class VCPScreener:
             "==================== 📊 選股漏斗統計 (Funnel Analytics) ====================\n"
             "  1. 股票清單總數:                   %d 檔\n"
             "  2. 歷史數據充足 (>=252天):          %d 檔\n"
-            "  3. 通過均量門檻 (上市>%d/上櫃>%d張): %d 檔\n"
+            "  3. 通過均量門檻 (上市>%d/上櫃>%d張): %d 檔 (其中處置股均量豁免保護: %d 檔)\n"
             "  4. 通過最低股價 (上市>%d/上櫃>%d元): %d 檔\n"
             "  5. 通過趨勢模板 (>=%d項):           %d 檔\n"
             "  6. 符合 VCP 波動收斂型態:           %d 檔\n"
@@ -318,6 +362,7 @@ class VCPScreener:
             self.settings.MIN_VOLUME,
             self.settings.MIN_VOLUME_OTC,
             stats["passed_volume"],
+            stats["disposition_protected"],
             int(self.settings.MIN_PRICE),
             int(self.settings.MIN_PRICE_OTC),
             stats["passed_prefilter"],

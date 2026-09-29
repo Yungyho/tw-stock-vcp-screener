@@ -7,7 +7,13 @@ Calculates a comprehensive score based on Trend Template, VCP characteristics, a
 import pandas as pd
 from typing import List, Dict
 
-def calculate_score(trend_result: dict, vcp_result: dict, df: pd.DataFrame, market_df: pd.DataFrame | None = None) -> float:
+def calculate_score(
+    trend_result: dict,
+    vcp_result: dict,
+    df: pd.DataFrame,
+    market_df: pd.DataFrame | None = None,
+    disposition_info: dict | None = None,
+) -> float:
     """
     Calculate a comprehensive score (0-100) based on trend and VCP results.
     
@@ -16,6 +22,7 @@ def calculate_score(trend_result: dict, vcp_result: dict, df: pd.DataFrame, mark
         vcp_result: Output from detect_vcp().
         df: The stock's price DataFrame.
         market_df: Optional market index DataFrame for relative strength.
+        disposition_info: Optional disposition details if stock is under disposition.
         
     Returns:
         float: Total score from 0 to 100.
@@ -36,15 +43,31 @@ def calculate_score(trend_result: dict, vcp_result: dict, df: pd.DataFrame, mark
         vcp_score += 5.0
     score += vcp_score
     
-    # 3. Volume decline (15%)
+    # 3. Volume decline & Disposition handling (15%)
     vol_score = 0.0
+    is_disposed = bool(disposition_info and disposition_info.get("stock_id"))
+    
     if len(df) >= 50:
-        recent_20d_avg_volume = df['Volume'].iloc[-20:].mean()
-        past_50d_avg_volume = df['Volume'].iloc[-50:].mean()
+        vol_col = "Volume" if "Volume" in df.columns else "volume"
+        recent_20d_avg_volume = df[vol_col].iloc[-20:].mean()
+        past_50d_avg_volume = df[vol_col].iloc[-50:].mean()
         
         if past_50d_avg_volume > 0:
             ratio = recent_20d_avg_volume / past_50d_avg_volume
-            vol_score = max(0.0, (1.0 - ratio)) * 15.0
+            raw_vol_score = max(0.0, (1.0 - ratio)) * 15.0
+
+            if is_disposed:
+                # 處置股量縮因法規限制 (5分/20分撮合與禁當沖)，非純自然供給耗盡
+                # 若股價在處置期間抗跌 (收在 20MA 之上且未跌破前波支撐)，視為主力強力鎖碼，給予 15.0 滿分
+                c_col = "Close" if "Close" in df.columns else "close"
+                sma20 = float(df[c_col].rolling(20).mean().iloc[-1])
+                last_c = float(df[c_col].iloc[-1])
+                if last_c >= sma20:
+                    vol_score = 15.0  # 處置期間高姿態抗跌加分
+                else:
+                    vol_score = min(raw_vol_score, 7.5)  # 處置走弱則保守計分
+            else:
+                vol_score = raw_vol_score
     score += vol_score
     
     # 4. Distance to pivot (20%)

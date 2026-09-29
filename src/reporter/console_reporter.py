@@ -30,6 +30,8 @@ def print_stock_diagnostic_report(
     market_cap: Optional[float] = None,
     turnover_twd: Optional[float] = None,
     benchmark_name: Optional[str] = None,
+    disposition_info: Optional[Dict[str, Any]] = None,
+    attention_info: Optional[Dict[str, Any]] = None,
 ) -> None:
     """輸出單檔股票的完整技術面與階段診斷報告至 Console."""
     sep = "=" * 88
@@ -84,6 +86,30 @@ def print_stock_diagnostic_report(
     bench_label = benchmark_name or ("TAIEX" if stock_info.get("market") != "otc" else "TPEx")
     print(f" 📊 20日均量  : {avg_vol_20:,.0f} 張 | ⚡ 1年期 Beta (vs {bench_label}): {beta_str}")
     print(f"{sub_sep}")
+
+    # ── 0. 處置與注意警示 ──
+    if disposition_info:
+        interval = disposition_info.get("matching_interval", "分盤撮合")
+        rem_days = disposition_info.get("remaining_trading_days", 0)
+        start_d = disposition_info.get("start_date", "")
+        end_d = disposition_info.get("end_date", "")
+        disp_type = disposition_info.get("disposition_type", "處置股票")
+        reasons = disposition_info.get("reasons", "")
+        soon_mark = " 🚀 [即將出關 / 剩餘 <= 2天]" if disposition_info.get("is_exiting_soon") else ""
+        print(f" 🚨 【處置股票警示 (Disposition Alert)】: {disp_type} ({interval}){soon_mark}")
+        print(f"    • 處置期間  : {start_d} ~ {end_d} (剩餘 {rem_days} 個營業日)")
+        if reasons:
+            print(f"    • 處置原因  : {reasons}")
+        print(f"    • 交易限制  : ⚠️ 全面禁止現股當沖 / 部分或全部款券預收圈存")
+        print(f"    • VCP 注意  : 處置期間日均量斷崖式萎縮為法規限制所致，需重點觀察股價是否在低量下抗跌橫盤或墊高底底高")
+        print(f"{sub_sep}")
+    elif attention_info:
+        notice_d = attention_info.get("notice_date", "")
+        reasons = attention_info.get("reasons", "")
+        print(f" ⚠️ 【注意股票資訊 (Attention Stock)】: 公告日期 {notice_d}")
+        if reasons:
+            print(f"    • 注意理由  : {reasons[:80]}...")
+        print(f"{sub_sep}")
 
     # ── 1. 市場階段判定 ──
     stage_icons = {1: "👀", 2: "🌟", 3: "⚠️", 4: "⛔"}

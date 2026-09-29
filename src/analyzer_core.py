@@ -178,6 +178,13 @@ def analyze_stock(
     # 6. 計算 Trend Template 9 條件
     tt_result = check_trend_template(analysis_df)
 
+    # 6b. 取得處置與注意股票資訊 (Disposition & Attention Info)
+    from src.disposition import DispositionManager
+    disp_mgr = DispositionManager(db)
+    disposition_info = disp_mgr.get_stock_disposition_info(stock_id)
+    recent_attns = disp_mgr.get_recent_attention_stocks(days=5)
+    attention_info = recent_attns.get(stock_id)
+
     # 7. 計算 VCP 波動收斂型態
     vcp_result = detect_vcp(
         analysis_df,
@@ -189,6 +196,7 @@ def analyze_stock(
         scan_mode=getattr(settings, "VCP_SCAN_MODE", "standard"),
         include_breakout=getattr(settings, "INCLUDE_RECENT_BREAKOUT", True),
         include_retest=getattr(settings, "INCLUDE_PIVOT_RETEST", True),
+        disposition_info=disposition_info,
     )
 
     # 8. 計算綜合評分
@@ -197,6 +205,7 @@ def analyze_stock(
         vcp_result=vcp_result,
         df=analysis_df,
         market_df=benchmark_df if not benchmark_df.empty else None,
+        disposition_info=disposition_info,
     )
 
     # 9. 計算 20 日均成交金額
@@ -218,4 +227,6 @@ def analyze_stock(
         "turnover_twd": turnover_twd,
         "benchmark_name": criteria["benchmark_name"],
         "benchmark_symbol": correct_benchmark_symbol,
+        "disposition_info": disposition_info,
+        "attention_info": attention_info,
     }

@@ -129,8 +129,10 @@ class TelegramCommandBot:
             "   完成後自動回傳符合條件的個股清單與市場寬度折線圖\n\n"
             "📈 */breadth* — 查看全市場寬度指標折線圖\n"
             "   顯示近一年股價站上 50MA 與 200MA 比例及多空結構解讀\n\n"
+            "🚨 */disp* (或 */disposition*) — 全台股處置股票名單\n"
+            "   查詢目前處於處置中的個股、分盤撮合方式與出關倒數\n\n"
             "🔍 */analyze <代號>* — 個股深度診斷\n"
-            "   分析指定個股的四大階段、TT 9 條件、VCP 收斂型態\n"
+            "   分析指定個股的四大階段、TT 9 條件、VCP 收斂型態與處置警示\n"
             "   範例: `/analyze 2330`\n"
             "   多檔: `/analyze 2330 2454 3008`\n\n"
             "📋 */status* — 查看服務運行狀態\n"
@@ -371,6 +373,59 @@ class TelegramCommandBot:
 
         return results
 
+    async def cmd_disposition(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """處理 /disposition 或 /disp 指令 → 查詢目前台股所有處置股票名單與出關倒數."""
+        if not self._is_authorized(update):
+            return
+
+        from src.disposition import DispositionManager
+        with DBManager(self.settings.DB_PATH) as db:
+            disp_mgr = DispositionManager(db)
+            active = disp_mgr.get_active_dispositions()
+
+        if not active:
+            await self._send_reply(update, "🟢 目前全市場查無處置中股票，或資料庫尚未同步。")
+            return
+
+        lines = [
+            f"🚨 *全台股處置股票追蹤名單* (共 {len(active)} 檔)",
+            "━━━━━━━━━━━━━━━━━━",
+        ]
+
+        exiting_soon = []
+        normal_disp = []
+
+        for sid, info in active.items():
+            if info.get("is_exiting_soon"):
+                exiting_soon.append(info)
+            else:
+                normal_disp.append(info)
+
+        if exiting_soon:
+            lines.append("🚀 *【即將出關 (剩餘 <= 2 天)】*")
+            for item in exiting_soon:
+                code = item["stock_id"]
+                name = item["stock_name"]
+                rem = item["remaining_trading_days"]
+                end = item["end_date"]
+                interval = item["matching_interval"]
+                lines.append(f"• `{code} {name}` | `{interval}` | 剩餘 *{rem}* 天 (至 {end})")
+            lines.append("")
+
+        lines.append("⏳ *【處置管制中】*")
+        for item in normal_disp:
+            code = item["stock_id"]
+            name = item["stock_name"]
+            rem = item["remaining_trading_days"]
+            end = item["end_date"]
+            interval = item["matching_interval"]
+            lines.append(f"• `{code} {name}` | {interval} | 剩餘 {rem} 天 (至 {end})")
+
+        lines.append("")
+        lines.append("💡 *提示*: 處置股被限制現股當沖且需預收款券，成交量驟降為法規所致。可使用 `/analyze <代號>` 檢視個股是否在處置期間維持高姿態抗跌橫盤！")
+
+        await self._send_reply(update, "\n".join(lines), parse_mode="Markdown")
+
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """處理所有純文字與頻道貼文訊息 (自動路由指令或解析股票代號)."""
         if not self._is_authorized(update):
@@ -401,6 +456,9 @@ class TelegramCommandBot:
                 return
             elif cmd in ("breadth", "market"):
                 await self.cmd_breadth(update, context)
+                return
+            elif cmd in ("disp", "disposition"):
+                await self.cmd_disposition(update, context)
                 return
             elif cmd == "analyze":
                 await self.cmd_analyze(update, context)
@@ -446,6 +504,8 @@ class TelegramCommandBot:
         app.add_handler(CommandHandler("scan", self.cmd_scan, filters=filters.ALL))
         app.add_handler(CommandHandler("breadth", self.cmd_breadth, filters=filters.ALL))
         app.add_handler(CommandHandler("market", self.cmd_breadth, filters=filters.ALL))
+        app.add_handler(CommandHandler("disp", self.cmd_disposition, filters=filters.ALL))
+        app.add_handler(CommandHandler("disposition", self.cmd_disposition, filters=filters.ALL))
         app.add_handler(CommandHandler("analyze", self.cmd_analyze, filters=filters.ALL))
 
         # 處理純文字訊息與頻道貼文 (直接輸入股票代號或頻道轉發指令)

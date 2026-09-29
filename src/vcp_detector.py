@@ -152,6 +152,7 @@ def detect_vcp(
     scan_mode: Optional[str] = None,
     include_breakout: bool = True,
     include_retest: bool = True,
+    disposition_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """檢測股票價格與成交量是否符合 VCP 波動收斂型態 (Detect VCP pattern).
 
@@ -443,6 +444,17 @@ def detect_vcp(
         },
     ]
 
+    is_disposed = bool(disposition_info and disposition_info.get("stock_id"))
+    if is_disposed:
+        interval = disposition_info.get("matching_interval", "分盤撮合")
+        rem_days = disposition_info.get("remaining_trading_days", 0)
+        end_d = disposition_info.get("end_date", "")
+        checklist.append({
+            "name": "處置狀態與交易限制",
+            "passed": True,
+            "detail": f"🚨 {interval} / 剩餘 {rem_days} 日 (至 {end_d}，量縮受管制影響)",
+        })
+
     if is_vcp:
         vcp_status_desc = f"{action_stage_desc} ({num_contractions}T: {'→'.join(f'{c}%' for c in contractions)})"
     elif action_stage == "EXTENDED":
@@ -473,5 +485,7 @@ def detect_vcp(
     result["vcp_status_desc"] = vcp_status_desc
     result["checklist"] = checklist
     result["failure_reasons"] = failure_reasons
+    result["is_disposed"] = is_disposed
+    result["disposition_info"] = disposition_info
 
     return result
