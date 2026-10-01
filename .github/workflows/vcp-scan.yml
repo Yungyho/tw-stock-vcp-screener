@@ -1,0 +1,159 @@
+name: VCP 每日掃描
+
+on:
+  # 台北 06:30（UTC 22:30 前一天）— 留足夠緩衝給 GitHub 排程延遲
+  schedule:
+    - cron: '30 22 * * 0-4'
+  # 手動執行按鈕
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '掃描模式'
+        required: false
+        default: 'standard'
+        type: choice
+        options: [standard, loose, strict]
+      force_download:
+        description: '強制重新下載股價（忽略快取）'
+        required: false
+        default: false
+        type: boolean
+  # 外部 cron 備援觸發
+  repository_dispatch:
+    types: [vcp-scan]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vcp-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      TZ: Asia/Taipei
+
+      # ══════════════════════════════════════════
+      #  要調的參數全在這裡，其餘不用動
+      # ══════════════════════════════════════════
+      MARKET: all                      # all / listed / otc
+      DATA_PERIOD: 18mo
+
+      # 上市門檻
+      MIN_VOLUME: '1000'
+      MIN_PRICE: '30'
+      MIN_MARKET_CAP: '5000000000'
+      MIN_TURNOVER_TWD: '100000'
+      MIN_BETA: '1.0'
+
+      # 上櫃門檻
+      MIN_VOLUME_OTC: '300'
+      MIN_PRICE_OTC: '20'
+      MIN_MARKET_CAP_OTC: '1500000000'
+      MIN_TURNOVER_TWD_OTC: '100000'
+      MIN_BETA_OTC: '1.0'
+
+      BENCHMARK_LISTED: '^TWII'
+      BENCHMARK_OTC: '006201.TWO'
+
+      ENABLE_MARKET_CAP_FILTER: 'true'
+      ENABLE_TURNOVER_FILTER: 'true'
+      ENABLE_BETA_FILTER: 'true'
+      EXCLUDE_ETF: 'true'
+      EXCLUDE_KY: 'true'
+      EXCLUDE_TDR: 'true'
+
+      # 第一次跑建議先放寬：MIN_PASS 設 7、SCAN_MODE 設 loose
+      TREND_TEMPLATE_MIN_PASS: '9'
+      VCP_SCAN_MODE: ${{ github.event.inputs.mode || 'standard' }}
+      INCLUDE_RECENT_BREAKOUT: 'true'
+      INCLUDE_PIVOT_RETEST: 'true'
+      VCP_STRICT_MODE: 'false'
+      VCP_STRICT_CONVERGENCE: 'true'
+      VCP_MAX_TIGHTNESS: '12.0'
+      VCP_MAX_PIVOT_DISTANCE: '8.0'
+      VCP_MAX_BASE_DEPTH: '45.0'
+
+      SCAN_HOUR: '17'
+      SCAN_MINUTE: '0'
+      TIMEZONE: 'Asia/Taipei'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安裝依賴
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # SQLite 快取：Runner 每次都是全新機器，不快取的話每天都要重抓全市場
+      - name: 還原股價快取
+        uses: actions/cache@v4
+        with:
+          path: data/stocks.db
+          key: stocks-db-${{ github.run_id }}
+          restore-keys: |
+            stocks-db-
+
+      # 專案用 .env 讀設定，這裡從 Secrets 和上面的 env 生成
+      - name: 產生 .env
+        run: |
+          mkdir -p data logs
+          cat > .env <<'ENVEOF'
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_CHAT_ID=${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}
+          TELEGRAM_USER_CHAT_ID=${{ secrets.TELEGRAM_USER_CHAT_ID }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}
+          ENVEOF
+          # 把上面 env: 區塊的所有設定一併寫入
+          for k in MARKET DATA_PERIOD \
+                   MIN_VOLUME MIN_PRICE MIN_MARKET_CAP MIN_TURNOVER_TWD MIN_BETA \
+                   MIN_VOLUME_OTC MIN_PRICE_OTC MIN_MARKET_CAP_OTC MIN_TURNOVER_TWD_OTC MIN_BETA_OTC \
+                   BENCHMARK_LISTED BENCHMARK_OTC \
+                   ENABLE_MARKET_CAP_FILTER ENABLE_TURNOVER_FILTER ENABLE_BETA_FILTER \
+                   EXCLUDE_ETF EXCLUDE_KY EXCLUDE_TDR \
+                   TREND_TEMPLATE_MIN_PASS VCP_SCAN_MODE \
+                   INCLUDE_RECENT_BREAKOUT INCLUDE_PIVOT_RETEST \
+                   VCP_STRICT_MODE VCP_STRICT_CONVERGENCE \
+                   VCP_MAX_TIGHTNESS VCP_MAX_PIVOT_DISTANCE VCP_MAX_BASE_DEPTH \
+                   SCAN_HOUR SCAN_MINUTE TIMEZONE; do
+            printf '%s=%s\n' "$k" "${!k}" >> .env
+          done
+          echo "已寫入 .env，共 $(wc -l < .env) 行（內容不印出）"
+
+      - name: 執行掃描
+        run: |
+          if [ "${{ github.event.inputs.force_download }}" = "true" ]; then
+            python run_once.py --force-download
+          else
+            python run_once.py
+          fi
+
+      - name: 保留日誌與圖表
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-output-${{ github.run_number }}
+          path: |
+            logs/
+            *.png
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # 掃描掛掉時主動通知，否則你會不知道今天沒跑
+      - name: 失敗通知
+        if: failure()
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHANNEL_CHAT_ID }}" \
+            -d text="⚠️ VCP 掃描失敗（run #${{ github.run_number }}），請查看 Actions 日誌。"
