@@ -68,8 +68,8 @@ jobs:
       EXCLUDE_TDR: 'true'
 
       # 第一次跑建議先放寬：MIN_PASS 設 7、SCAN_MODE 設 loose
-      TREND_TEMPLATE_MIN_PASS: '7'
-      VCP_SCAN_MODE: ${{ github.event.inputs.mode || 'loose' }}
+      TREND_TEMPLATE_MIN_PASS: '9'
+      VCP_SCAN_MODE: ${{ github.event.inputs.mode || 'standard' }}
       INCLUDE_RECENT_BREAKOUT: 'true'
       INCLUDE_PIVOT_RETEST: 'true'
       VCP_STRICT_MODE: 'false'
