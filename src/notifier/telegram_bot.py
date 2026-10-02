@@ -93,6 +93,8 @@ class TelegramNotifier(BaseNotifier):
             turnover_str = f"{turnover / 1e8:.2f}億" if turnover >= 1e8 else f"{turnover / 1e4:.0f}萬"
             # Beta 格式化
             beta_str = f"{beta:.2f}" if beta is not None else "N/A"
+            rs_val = res.get("rs_rating")
+            rs_str = str(rs_val) if rs_val else "N/A"
 
             # Yahoo 奇摩股市技術分析圖連結
             yahoo_tech_url = f"https://tw.stock.yahoo.com/quote/{stock_id}/technical-analysis"
@@ -122,7 +124,7 @@ class TelegramNotifier(BaseNotifier):
             message += f"{emoji} *[{stock_id} {name}]({yahoo_tech_url})*{stage_badge}{disp_badge} ⭐ {score:.0f}分\n"
             message += f"   💰 收盤: {close:,.0f} | 🎯 突破: {pivot:,.0f} | 距突破: {distance}%\n"
             message += f"   🏢 市值: {mcap_str} | 💵 均金額: {turnover_str}\n"
-            message += f"   ⚡ 1年Beta: {beta_str} | 📉 收斂: {contraction_str}\n"
+            message += f"   ⚡ Beta: {beta_str} | 🔥 RS: {rs_str} | 📉 收斂: {contraction_str}\n"
             message += f"   📊 量縮: {volume_change}% | ✅ TT: {tt_pass}/9\n"
             message += f"   🔗 [開啟技術分析圖]({yahoo_tech_url})\n\n"
             
