@@ -81,6 +81,9 @@ jobs:
       SCAN_HOUR: '17'
       SCAN_MINUTE: '0'
       TIMEZONE: 'Asia/Taipei'
+      
+      # ── 相對強度 ──
+      MIN_RS_RATING: '70'
 
     steps:
       - uses: actions/checkout@v4
@@ -125,7 +128,8 @@ jobs:
                    INCLUDE_RECENT_BREAKOUT INCLUDE_PIVOT_RETEST \
                    VCP_STRICT_MODE VCP_STRICT_CONVERGENCE \
                    VCP_MAX_TIGHTNESS VCP_MAX_PIVOT_DISTANCE VCP_MAX_BASE_DEPTH \
-                   SCAN_HOUR SCAN_MINUTE TIMEZONE; do
+                   SCAN_HOUR SCAN_MINUTE TIMEZONE MAX_DISPLAY_RESULTS \
+                   MIN_RS_RATING; do
             printf '%s=%s\n' "$k" "${!k}" >> .env
           done
           echo "已寫入 .env，共 $(wc -l < .env) 行（內容不印出）"
