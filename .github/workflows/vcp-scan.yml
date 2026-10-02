@@ -135,12 +135,7 @@ jobs:
           echo "已寫入 .env，共 $(wc -l < .env) 行（內容不印出）"
 
       - name: 執行掃描
-        run: |
-          if [ "${{ github.event.inputs.force_download }}" = "true" ]; then
-            python run_once.py --force-download
-          else
-            python run_once.py
-          fi
+        run: python run_once.py --force-download
 
       - name: 保留日誌與圖表
         if: always()
