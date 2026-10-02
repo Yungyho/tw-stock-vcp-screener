@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 from typing import Any, Optional
@@ -20,6 +21,7 @@ from src.scorer import calculate_score, rank_results
 from src.data_fetcher import DataFetcher
 from src.db.manager import DBManager
 from src.market_cap import fetch_and_update_market_caps
+from src.rs_rating import build_rs_ratings
 from src.notifier.telegram_bot import TelegramNotifier
 from src.disposition import DispositionManager
 
@@ -128,6 +130,13 @@ class VCPScreener:
         if not benchmark_otc_df.empty:
             benchmark_otc_df = self._prepare_df_for_analysis(benchmark_otc_df)
 
+        # Step 3c: 計算全市場 RS Rating
+        min_rs = int(os.getenv("MIN_RS_RATING", "0"))
+        rs_map: dict[str, int] = {}
+        if min_rs > 0:
+            logger.info("Step 3c: 正在計算全市場 RS Rating (門檻 >= %d)...", min_rs)
+            rs_map = build_rs_ratings(self.db, stocks)
+        
         # Step 3b: 同步並載入處置與注意股票清單 (Disposition & Attention Stocks)
         logger.info("Step 3b: 檢查並同步台股處置與注意股票名單 (TWSE + TPEx)...")
         disp_mgr = DispositionManager(self.db)
@@ -195,6 +204,11 @@ class VCPScreener:
             if df.empty or len(df) < 252:
                 continue
             stats["data_sufficient"] += 1
+            
+            # 4b2: RS Rating 相對強度過濾
+            rs_rating = rs_map.get(stock_id)
+            if min_rs > 0 and (rs_rating is None or rs_rating < min_rs):
+                continue
 
             # 4c: 成交量、成交金額與最低股價過濾
             disp_info = active_dispositions.get(stock_id)
@@ -304,6 +318,7 @@ class VCPScreener:
                 "market_cap": market_cap,
                 "turnover_twd": turnover_twd,
                 "beta_1y": beta_1y,
+                "rs_rating": rs_rating if min_rs > 0 else None,
                 "benchmark_name": criteria["benchmark_name"],
                 "score": round(score, 1),
                 "rank": 0,
