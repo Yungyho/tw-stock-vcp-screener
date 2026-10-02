@@ -141,7 +141,7 @@ class DataFetcher:
                 yf_symbol,
                 period=data_period,
                 progress=False,
-                auto_adjust=False,
+                auto_adjust=True,
             )
 
             cleaned_df = self._clean_and_convert_df(raw_df)
@@ -171,7 +171,7 @@ class DataFetcher:
                 symbol,
                 period=data_period,
                 progress=False,
-                auto_adjust=False,
+                auto_adjust=True,
             )
             cleaned_df = self._clean_and_convert_df(raw_df)
             if cleaned_df is not None and not cleaned_df.empty:
@@ -257,7 +257,7 @@ class DataFetcher:
                     group_by="ticker",
                     threads=True,
                     progress=False,
-                    auto_adjust=False,
+                    auto_adjust=True,
                 )
 
                 # 逐檔提取資料並寫入資料庫
