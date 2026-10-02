@@ -135,7 +135,7 @@ jobs:
           echo "已寫入 .env，共 $(wc -l < .env) 行（內容不印出）"
 
       - name: 執行掃描
-        run: python run_once.py --force-fetch --clear-cache
+        run: python run_once.py --force-fetch
 
       - name: 保留日誌與圖表
         if: always()
